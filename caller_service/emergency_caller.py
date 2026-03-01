@@ -1,4 +1,5 @@
 import os
+import html
 from twilio.rest import Client
 from dotenv import load_dotenv
 
@@ -36,23 +37,19 @@ def trigger_emergency_call(to_number=None, threat_overview=""):
 
     # We use TwiML (Twilio Markup Language) to construct the voice response.
     # The <Say> verb converts text to speech when the call is answered.
-    # We add <Pause> to ensure the message isn't cut off if they answer slowly.
-    twiml_instructions = f"""
-    <Response>
-        <Pause length="1"/>
-        <Say voice="Polly.Matthew" language="en-US">
-            Emergency alert triggered. Please listen carefully to the following situation overview.
-            <Pause length="1"/>
-            {threat_overview}
-        </Say>
-        <Pause length="2"/>
-        <Say voice="Polly.Matthew" language="en-US">
-            Repeating alert.
-            <Pause length="1"/>
-            {threat_overview}
-        </Say>
-    </Response>
-    """
+    # IMPORTANT: <Pause> must be a sibling of <Say>, NOT nested inside it (per Twilio docs).
+    safe_overview = html.escape(threat_overview) if threat_overview else "No additional details."
+    twiml_instructions = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Pause length="1"/>
+    <Say voice="Polly.Matthew" language="en-US">Emergency alert triggered. Please listen carefully to the following situation overview.</Say>
+    <Pause length="1"/>
+    <Say voice="Polly.Matthew" language="en-US">{safe_overview}</Say>
+    <Pause length="2"/>
+    <Say voice="Polly.Matthew" language="en-US">Repeating alert.</Say>
+    <Pause length="1"/>
+    <Say voice="Polly.Matthew" language="en-US">{safe_overview}</Say>
+</Response>"""
 
     try:
         call = client.calls.create(
