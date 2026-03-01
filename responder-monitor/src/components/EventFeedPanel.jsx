@@ -1,7 +1,7 @@
 import { useRef, useEffect, useCallback } from 'react'
 import { useMonitor } from '../context/MonitorContext.jsx'
 
-const FILTERS = ['all', 'audio', 'video', 'system', 'user']
+const FILTERS = ['all', 'audio', 'video', 'risk', 'system', 'user']
 
 const ICONS = {
   audio: (
@@ -67,8 +67,8 @@ export default function EventFeedPanel() {
   const prevCountRef = useRef(events.length)
 
   const filtered = events.filter(e => {
-    const typeOk  = filter === 'all' || e.type === filter
-    const q       = search.toLowerCase()
+    const typeOk = filter === 'all' || e.type === filter
+    const q = search.toLowerCase()
     const queryOk = !q || e.label.toLowerCase().includes(q) || e.text.toLowerCase().includes(q) || e.time.includes(q)
     return typeOk && queryOk
   })

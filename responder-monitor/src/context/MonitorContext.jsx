@@ -6,9 +6,12 @@ import {
   useRef,
   useCallback,
   useMemo,
+  useState,
 } from 'react'
 import { STATES, LIVE_EVENT_TEMPLATES } from '../data/states.js'
 import { INITIAL_FEED_EVENTS, makeEvent } from '../data/feedEvents.js'
+
+const BACKEND_URL = 'http://localhost:8000'
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
 function nowTs() {
@@ -121,7 +124,7 @@ function reducer(state, action) {
 /* ── Initial state ───────────────────────────────────────────────────── */
 function buildInitialState() {
   const name = 'elevated'
-  const cfg  = STATES[name]
+  const cfg = STATES[name]
   return {
     currentStateName: name,
     events: INITIAL_FEED_EVENTS,
@@ -152,6 +155,8 @@ export function useMonitor() {
 
 export function MonitorProvider({ children }) {
   const [state, dispatch] = useReducer(reducer, undefined, buildInitialState)
+  const [backendConnected, setBackendConnected] = useState(false)
+  const [liveScore, setLiveScore] = useState(0)
 
   // Stable ref so effects can read currentStateName without re-subscribing
   const stateNameRef = useRef(state.currentStateName)
@@ -171,24 +176,24 @@ export function MonitorProvider({ children }) {
       const name = stateNameRef.current
       if (name === 'reconnecting') return
 
-      const cfg       = STATES[name]
+      const cfg = STATES[name]
       const templates = LIVE_EVENT_TEMPLATES[name] ?? []
 
       // Randomly add a feed event
       if (templates.length > 0 && Math.random() < 0.68) {
         const tpl = templates[Math.floor(Math.random() * templates.length)]
         const ev = makeEvent({
-          type:  tpl.type,
+          type: tpl.type,
           label: tpl.label,
-          text:  tpl.makeText(cfg),
+          text: tpl.makeText(cfg),
           score: tpl.score ? tpl.score() : null,
         })
         dispatch({ type: 'ADD_EVENT', payload: ev })
       }
 
       // Sparkline + audio level
-      const newPoint      = Math.max(0, Math.min(100, cfg.sparkBase + (Math.random() * 14 - 7)))
-      const variation     = (Math.random() - 0.45) * 18
+      const newPoint = Math.max(0, Math.min(100, cfg.sparkBase + (Math.random() * 14 - 7)))
+      const variation = (Math.random() - 0.45) * 18
       const newAudioLevel = Math.max(0, Math.min(100, cfg.audioLevel + (Math.random() * 16 - 8) + variation * 0.3))
       dispatch({ type: 'LIVE_TICK', payload: { newPoint, newAudioLevel } })
     }, 3200)
@@ -204,6 +209,58 @@ export function MonitorProvider({ children }) {
         payload: makeEvent({ type: 'system', label: 'System:', text: 'Attempting reconnect…' }),
       })
     }, 5000)
+    return () => clearInterval(id)
+  }, [])
+
+  /* ── Backend polling ──────────────────────────────────────────────── */
+  // Track events already seen so we only dispatch new ones
+  const seenEventTimestamps = useRef(new Set())
+
+  /* Poll /score every 1s — update liveScore + push real sparkline points */
+  useEffect(() => {
+    const id = setInterval(async () => {
+      try {
+        const res = await fetch(`${BACKEND_URL}/score`, { signal: AbortSignal.timeout(900) })
+        if (!res.ok) throw new Error('bad status')
+        const data = await res.json()
+        const s = Math.max(0, Math.min(100, data.score ?? 0))
+        setLiveScore(s)
+        setBackendConnected(true)
+        // Push real score into sparkline
+        dispatch({ type: 'LIVE_TICK', payload: { newPoint: s, newAudioLevel: s } })
+      } catch {
+        setBackendConnected(false)
+      }
+    }, 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  /* Poll /events every 2s — inject new backend events into the feed */
+  useEffect(() => {
+    const id = setInterval(async () => {
+      try {
+        const res = await fetch(`${BACKEND_URL}/events`, { signal: AbortSignal.timeout(1800) })
+        if (!res.ok) throw new Error('bad status')
+        const data = await res.json()
+        const events = data.events ?? []
+        events.forEach((ev) => {
+          const key = `${ev.type}-${ev.timestamp}`
+          if (seenEventTimestamps.current.has(key)) return
+          seenEventTimestamps.current.add(key)
+          const feedEvent = makeEvent({
+            type: ev.type === 'weapon' ? 'risk' : 'video',
+            label: ev.type === 'weapon' ? 'Weapon:' : 'Posture:',
+            text: ev.message ?? '',
+            score: ev.score != null ? String(ev.score) : null,
+          })
+          // Override time with backend-formatted time if available
+          if (ev.formatted_time) feedEvent.time = ev.formatted_time
+          dispatch({ type: 'ADD_EVENT', payload: feedEvent })
+        })
+      } catch {
+        // silently ignore — connectivity tracked by /score poll
+      }
+    }, 2000)
     return () => clearInterval(id)
   }, [])
 
@@ -226,15 +283,15 @@ export function MonitorProvider({ children }) {
     }
   }, [])
 
-  const markSafe       = useCallback(() => dispatch({ type: 'MARK_SAFE' }), [])
-  const openModal      = useCallback(() => dispatch({ type: 'OPEN_MODAL' }), [])
-  const closeModal     = useCallback(() => dispatch({ type: 'CLOSE_MODAL' }), [])
-  const toggleMute     = useCallback(() => dispatch({ type: 'TOGGLE_MUTE' }), [])
-  const toggleWhy      = useCallback(() => dispatch({ type: 'TOGGLE_WHY' }), [])
-  const dismissAlert   = useCallback(() => dispatch({ type: 'DISMISS_ALERT' }), [])
-  const setFilter      = useCallback((f) => dispatch({ type: 'SET_FILTER', payload: f }), [])
-  const setSearch      = useCallback((q) => dispatch({ type: 'SET_SEARCH', payload: q }), [])
-  const togglePlayer   = useCallback((k) => dispatch({ type: 'TOGGLE_PLAYER', payload: k }), [])
+  const markSafe = useCallback(() => dispatch({ type: 'MARK_SAFE' }), [])
+  const openModal = useCallback(() => dispatch({ type: 'OPEN_MODAL' }), [])
+  const closeModal = useCallback(() => dispatch({ type: 'CLOSE_MODAL' }), [])
+  const toggleMute = useCallback(() => dispatch({ type: 'TOGGLE_MUTE' }), [])
+  const toggleWhy = useCallback(() => dispatch({ type: 'TOGGLE_WHY' }), [])
+  const dismissAlert = useCallback(() => dispatch({ type: 'DISMISS_ALERT' }), [])
+  const setFilter = useCallback((f) => dispatch({ type: 'SET_FILTER', payload: f }), [])
+  const setSearch = useCallback((q) => dispatch({ type: 'SET_SEARCH', payload: q }), [])
+  const togglePlayer = useCallback((k) => dispatch({ type: 'TOGGLE_PLAYER', payload: k }), [])
 
   const confirmEscalate = useCallback(() => {
     dispatch({ type: 'ESC_LOADING' })
@@ -254,6 +311,8 @@ export function MonitorProvider({ children }) {
   const value = useMemo(() => ({
     ...state,
     stateConfig: STATES[state.currentStateName],
+    backendConnected,
+    liveScore,
     // actions
     applyState,
     markSafe,
@@ -269,6 +328,8 @@ export function MonitorProvider({ children }) {
     recordClip,
   }), [
     state,
+    backendConnected,
+    liveScore,
     applyState, markSafe, openModal, closeModal,
     toggleMute, toggleWhy, dismissAlert, setFilter,
     setSearch, togglePlayer, confirmEscalate, recordClip,

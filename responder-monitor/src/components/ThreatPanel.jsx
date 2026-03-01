@@ -1,6 +1,14 @@
 import { useId } from 'react'
 import { useMonitor } from '../context/MonitorContext.jsx'
 
+/* ── Derive live threat level from numeric score ──────────────────────── */
+function deriveLiveLevel(score) {
+  if (score >= 80) return { level: 'High', levelCls: 'high', sub: 'Immediate review required' }
+  if (score >= 60) return { level: 'Elevated', levelCls: 'elevated', sub: 'Monitoring closely' }
+  if (score >= 30) return { level: 'Moderate', levelCls: 'elevated', sub: 'Attention advised' }
+  return { level: 'Low', levelCls: 'low', sub: 'All clear' }
+}
+
 /* ── Sparkline ───────────────────────────────────────────────────────── */
 function ThreatSparkline({ data, color }) {
   const uid = useId()
@@ -22,7 +30,7 @@ function ThreatSparkline({ data, color }) {
       <svg viewBox="0 0 200 26" preserveAspectRatio="none">
         <defs>
           <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%"   stopColor={color} stopOpacity="0.28" />
+            <stop offset="0%" stopColor={color} stopOpacity="0.28" />
             <stop offset="100%" stopColor={color} stopOpacity="0" />
           </linearGradient>
         </defs>
@@ -42,16 +50,31 @@ function ThreatSparkline({ data, color }) {
 }
 
 export default function ThreatPanel() {
-  const { stateConfig, sparkData, whyOpen, toggleWhy } = useMonitor()
+  const { stateConfig, sparkData, whyOpen, toggleWhy, backendConnected, liveScore } = useMonitor()
 
   if (!stateConfig) return null
 
-  const { score, level, levelCls, sub, chips, sparkColor, whyText } = stateConfig
+  // When live backend is connected, derive everything from the real score
+  const displayScore = backendConnected ? Math.round(liveScore) : stateConfig.score
+  const { level, levelCls, sub } = backendConnected
+    ? deriveLiveLevel(displayScore)
+    : { level: stateConfig.level, levelCls: stateConfig.levelCls, sub: stateConfig.sub }
+
+  const sparkColor = stateConfig.sparkColor
+  const chips = stateConfig.chips
+  const whyText = stateConfig.whyText
 
   return (
     <div className="panel" role="region" aria-label="Threat level">
       <div className="panel-hd">
-        <h2 className="panel-title">Threat Level</h2>
+        <h2 className="panel-title">
+          Threat Level
+          {backendConnected && (
+            <span style={{ fontSize: '0.65rem', fontWeight: 400, color: 'var(--live)', marginLeft: '0.5rem' }}>
+              ● LIVE
+            </span>
+          )}
+        </h2>
         <button
           className="panel-action"
           onClick={toggleWhy}
@@ -66,9 +89,9 @@ export default function ThreatPanel() {
         <div className="score-row">
           <div
             className={`t-score ${levelCls}`}
-            aria-label={`Threat score ${score} out of 100`}
+            aria-label={`Threat score ${displayScore} out of 100`}
           >
-            {score}
+            {displayScore}
           </div>
           <div className="score-meta">
             <div className={`t-level ${levelCls}`}>{level}</div>
@@ -101,3 +124,4 @@ export default function ThreatPanel() {
     </div>
   )
 }
+

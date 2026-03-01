@@ -672,7 +672,17 @@ def get_score():
 
 @app.get("/events")
 def get_events():
-    return {"events": global_event_log}
+    enriched = []
+    for ev in global_event_log:
+        import datetime
+        ts = ev.get("timestamp", 0)
+        formatted = datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+        enriched.append({**ev, "formatted_time": formatted})
+    return {"events": enriched}
+
+@app.get("/status")
+def get_status():
+    return {"connected": True}
 
 
 def start_server():
