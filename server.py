@@ -3,12 +3,15 @@ Live video stream with YOLO object detection.
 Default: best knife detection via Threat-Detection-YOLOv8n (filtered to knife only).
 Use --all-threats for Gun, Knife, Explosive, Grenade. Use --general for YOLO12n (80 COCO classes). Mac M4 (MPS) supported.
 Supports: UDP stream (e.g. from Arduino/FFmpeg), webcam (0), or video file.
+When source is UDP, audio from the stream is played (requires: pip install av sounddevice). Use --no-audio to disable.
 Use --fast for lower latency (imgsz=512, stride=2) with good detection quality.
 """
 import argparse
 import os
 import sys
+import threading
 from pathlib import Path
+from queue import Queue, Empty
 
 import cv2
 from ultralytics import YOLO
@@ -85,6 +88,247 @@ def open_capture(source: str):
     return cap
 
 
+# Fixed output rate for stable playback (sender uses 48000)
+AUDIO_OUT_RATE = 48000
+AUDIO_BLOCKSIZE = 1024
+
+
+def _audio_stream_worker(audio_queue: Queue, sample_rate: int, channels: int, stop_event: threading.Event):
+    """Play audio using OutputStream callback so playback runs at a constant rate (smoother)."""
+    try:
+        import sounddevice as sd
+        import numpy as np
+
+        # Buffer: hold samples we haven't played yet (interleaved float32)
+        buffer = []
+        buffer_frames = 0
+
+        def _get_frames(n_frames):
+            nonlocal buffer_frames
+            out = np.zeros((n_frames, channels), dtype=np.float32, order="C")
+            filled = 0
+            while filled < n_frames:
+                if not buffer:
+                    try:
+                        chunk = audio_queue.get(timeout=0.1)
+                        if chunk is None:
+                            break
+                        if chunk.dtype != np.float32:
+                            chunk = np.clip(
+                                chunk.astype(np.float32) / (2 ** (chunk.dtype.itemsize * 8 - 1)), -1.0, 1.0
+                            )
+                        if chunk.ndim == 1:
+                            chunk = chunk.reshape(-1, 1)
+                        if chunk.shape[1] != channels:
+                            chunk = np.repeat(chunk, channels, axis=1) if channels > 1 else chunk[:, :1]
+                        buffer.append(chunk)
+                        buffer_frames += chunk.shape[0]
+                    except Empty:
+                        break
+                if buffer:
+                    take = min(buffer[0].shape[0], n_frames - filled)
+                    out[filled : filled + take] = buffer[0][:take]
+                    filled += take
+                    if take >= buffer[0].shape[0]:
+                        buffer_frames -= buffer[0].shape[0]
+                        buffer.pop(0)
+                    else:
+                        buffer[0] = buffer[0][take:]
+                        buffer_frames -= take
+            return out
+
+        def callback(outdata, frames, time_info, status):
+            if status:
+                print("Audio:", status, file=sys.stderr)
+            data = _get_frames(frames)
+            outdata[:] = data
+
+        with sd.OutputStream(
+            samplerate=sample_rate,
+            channels=channels,
+            dtype="float32",
+            blocksize=AUDIO_BLOCKSIZE,
+            callback=callback,
+        ):
+            stop_event.wait()
+    except Exception as e:
+        print("Audio playback error:", e, file=sys.stderr)
+
+
+def run_with_audio_av(
+    source: str,
+    model,
+    args,
+    filter_cls_ids,
+    use_half: bool,
+    device: str,
+    is_general: bool,
+    class_names: dict,
+):
+    """Run YOLO on video from UDP stream and play audio using PyAV. Source must be UDP."""
+    import av
+    import numpy as np
+
+    # PyAV/FFmpeg: receiver must bind and listen. Match sender pkt_size.
+    if "udp://" in source.lower():
+        # e.g. udp://@:1234 or udp://0.0.0.0:1234
+        parts = source.strip().rstrip("/").replace("udp://", "").split("?")[0]
+        if "@" in parts:
+            port = parts.split(":")[-1].strip()
+        else:
+            port = parts.split(":")[-1].strip()
+        av_source = "udp://0.0.0.0:%s?pkt_size=1316&overrun_nonfatal=1&listen=1" % port
+    else:
+        av_source = source
+
+    try:
+        container = av.open(av_source, options={"fflags": "nobuffer", "flags": "low_delay"})
+    except Exception as e:
+        print("PyAV open failed:", e)
+        return False
+
+    video_stream = None
+    audio_stream = None
+    for s in container.streams:
+        if s.type == "video":
+            video_stream = s
+        elif s.type == "audio":
+            audio_stream = s
+
+    if not video_stream:
+        container.close()
+        return False
+    if not audio_stream:
+        print("No audio stream in source (video-only). Install av/sounddevice and ensure sender uses audio.")
+
+    audio_queue = Queue(maxsize=60)
+    audio_stop = threading.Event()
+    if audio_stream:
+        try:
+            import sounddevice as sd
+            # Use fixed 48 kHz to match sender and avoid speed/wobble
+            rate = AUDIO_OUT_RATE
+            layout = audio_stream.layout
+            if hasattr(layout, "channels"):
+                channels = layout.channels if isinstance(layout.channels, int) else len(layout.channels)
+            else:
+                channels = 1
+            audio_thread = threading.Thread(
+                target=_audio_stream_worker,
+                args=(audio_queue, rate, channels, audio_stop),
+                daemon=True,
+            )
+            audio_thread.start()
+            print("Audio from stream enabled (speakers, %d Hz)" % rate)
+        except ImportError:
+            print("Install sounddevice for audio: pip install sounddevice")
+            audio_stream = None
+
+    last_results = None
+    frame_index = 0
+
+    try:
+        # Demux all streams; handle video and audio packets.
+        for packet in container.demux():
+            if packet.stream.type == "video":
+                for frame in packet.decode():
+                    try:
+                        img = frame.to_ndarray(format="bgr24")
+                    except Exception:
+                        img = frame.reformat(format="bgr24").to_ndarray()
+                    if img is None:
+                        continue
+
+                    if frame_index % args.stride == 0:
+                        predict_kw = dict(
+                            conf=args.conf,
+                            verbose=False,
+                            imgsz=args.imgsz,
+                            half=use_half,
+                            device=device,
+                            max_det=100,
+                            iou=0.5,
+                        )
+                        if filter_cls_ids is not None:
+                            predict_kw["classes"] = filter_cls_ids
+                        results = model.predict(img, **predict_kw)
+                        last_results = results
+
+                    if last_results and len(last_results) > 0:
+                        annotated = last_results[0].plot(img=img.copy())
+                    else:
+                        annotated = img
+                    frame_index += 1
+
+                    if not args.no_display:
+                        if is_general:
+                            title = "YOLO12 general detection"
+                        elif args.all_threats:
+                            title = "Multi-threat detection (Gun, Knife, Explosive, Grenade)"
+                        else:
+                            title = "Knife detection"
+                        cv2.imshow(title, annotated)
+                        if cv2.waitKey(1) & 0xFF == ord("q"):
+                            raise StopIteration
+                    else:
+                        if last_results and len(last_results) > 0 and len(last_results[0].boxes) > 0:
+                            for box in last_results[0].boxes:
+                                cls_id = int(box.cls[0])
+                                conf = float(box.conf[0])
+                                name = class_names.get(cls_id, str(cls_id))
+                                print("Detection: %s @ conf=%.2f" % (name, conf))
+
+            elif packet.stream.type == "audio" and audio_stream is not None and audio_queue is not None:
+                for frame in packet.decode():
+                    try:
+                        arr = frame.to_ndarray()
+                        # Normalize to float32 [-1, 1]
+                        if arr.dtype != np.float32:
+                            arr = arr.astype(np.float32) / (2 ** (arr.dtype.itemsize * 8 - 1))
+                        # (samples, channels) for sounddevice; PyAV often (channels, samples)
+                        if arr.ndim == 2 and arr.shape[0] < arr.shape[1]:
+                            arr = arr.T
+                        # Resample to 48 kHz if stream rate differs (avoids speed/wobble)
+                        in_rate = frame.sample_rate or audio_stream.sample_rate or 48000
+                        if in_rate != AUDIO_OUT_RATE and in_rate > 0:
+                            n_out = int(round(arr.shape[0] * AUDIO_OUT_RATE / in_rate))
+                            if arr.ndim == 1:
+                                arr = np.interp(
+                                    np.linspace(0, arr.shape[0] - 1, n_out),
+                                    np.arange(arr.shape[0]),
+                                    arr,
+                                ).astype(np.float32)
+                            else:
+                                arr = np.column_stack([
+                                    np.interp(
+                                        np.linspace(0, arr.shape[0] - 1, n_out),
+                                        np.arange(arr.shape[0]),
+                                        arr[:, c],
+                                    ).astype(np.float32)
+                                    for c in range(arr.shape[1])
+                                ])
+                        try:
+                            audio_queue.put(arr, block=False)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
+    except StopIteration:
+        pass
+    except Exception as e:
+        print("Stream error:", e)
+    finally:
+        audio_stop.set()
+        if audio_queue is not None:
+            try:
+                audio_queue.put(None, timeout=0.5)
+            except Exception:
+                pass
+        container.close()
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Live YOLO detection. Default: knife detection. Use --all-threats or --general. Mac M4 (MPS) supported."
@@ -114,6 +358,7 @@ def main():
     parser.add_argument("--imgsz", type=int, default=None, help="Inference size (default 640, 512 in --fast)")
     parser.add_argument("--stride", type=int, default=None, help="Run detection every N frames (default 1, 2 in --fast)")
     parser.add_argument("--fast", "-f", action="store_true", help="Lower latency: imgsz=512, stride=2 (good accuracy)")
+    parser.add_argument("--no-audio", action="store_true", help="Disable audio playback from UDP stream")
     parser.add_argument("--no-half", action="store_true", help="Disable FP16 (use if errors on GPU/MPS)")
     args = parser.parse_args()
 
@@ -167,6 +412,37 @@ def main():
             pass
 
     print("Opening source:", args.source)
+    # When source is UDP and audio not disabled, try PyAV for video+audio (audio played to speakers).
+    use_av_audio = (
+        not args.no_audio
+        and args.source.strip().lower().startswith("udp://")
+    )
+    if use_av_audio:
+        try:
+            import av
+            print("Trying video+audio path (PyAV)...")
+            if run_with_audio_av(
+                args.source,
+                model,
+                args,
+                filter_cls_ids,
+                use_half,
+                device,
+                is_general,
+                class_names,
+            ):
+                if not args.no_display:
+                    cv2.destroyAllWindows()
+                return
+        except ImportError as e:
+            print("Install av and sounddevice for audio: pip install av sounddevice")
+            print("Falling back to video only.")
+        except Exception as e:
+            print("Audio path failed, falling back to video only:", e)
+        use_av_audio = False
+
+    print("Using video-only path (OpenCV). No audio.")
+
     cap = open_capture(args.source)
     if not cap.isOpened():
         print("Error: Could not open video stream.")
