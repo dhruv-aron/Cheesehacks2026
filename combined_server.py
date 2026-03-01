@@ -80,7 +80,11 @@ last_emergency_call_time = 0.0
 EMERGENCY_CALL_COOLDOWN = 60.0
 ffmpeg_process_running = False
 
-THREAT_ASSESSMENT_SYSTEM_PROMPT = """You are a threat assessment assistant. You will receive a transcription of audio from a police stop (e.g., traffic stop, pedestrian stop). Your job is to assess the situation and provide a concise threat assessment.
+# Visual context log: "potential knife detected" etc., sent to Gemini with transcript (does not trigger calls on its own)
+VISUAL_CONTEXT_LOG_MAX = 20
+visual_context_log = []
+
+THREAT_ASSESSMENT_SYSTEM_PROMPT = """You are a threat assessment assistant for a police officer support system. You will receive a transcription of audio from a police stop (e.g., traffic stop, pedestrian stop), and optionally visual context (e.g. potential weapon/knife detections from the camera). Your job is to assess the situation and provide a concise threat assessment.
 
 Consider:
 - Tone and language (calm vs agitated, compliant vs hostile)
@@ -88,12 +92,14 @@ Consider:
 - Signs of de-escalation or escalation
 - Any mention of weapons, violence, or intent to harm
 - Context that might indicate risk to the officer or the person stopped
+- Any visual context provided (e.g. potential knife/weapon on camera) when combined with audio
 
 Respond with:
 1. THREAT LEVEL: [LOW / MODERATE / ELEVATED / HIGH] and one sentence why.
 2. KEY OBSERVATIONS: 2-4 bullet points.
 3. RECOMMENDATION: One short sentence (e.g., "Continue de-escalation" or "Request backup if available").
-Keep the response brief and actionable."""
+
+Keep the response brief and actionable. Your assessment may be read aloud in an automated emergency call to dispatch, so use clear, professional language suitable for voice."""
 
 # ==========================================
 # 2. MoveNet initialization and Constants
@@ -317,17 +323,22 @@ def process_single_frame(frame, yolo_model, predict_kw):
         current_danger_score = current_danger_score * (1 - alpha) + raw_score * alpha 
         
     # --- GLOBAL THREAT CALCULATION ---
-    global global_threat_score, global_event_log, last_weapon_time, last_posture_time, last_emergency_call_time
+    global global_threat_score, global_event_log, last_weapon_time, last_posture_time, last_emergency_call_time, visual_context_log
     
+    current_time = time.time()
     weapon_detected = False
     if results and len(results) > 0 and results[0].boxes and len(results[0].boxes) > 0:
         weapon_detected = True
+        # Log for Gemini context only (knife never triggers a call on its own)
+        if (current_time - last_weapon_time) > COOLDOWN_SEC:
+            visual_context_log.append(f"Potential knife/weapon detected on camera (at {time.strftime('%H:%M:%S', time.localtime(current_time))})")
+            if len(visual_context_log) > VISUAL_CONTEXT_LOG_MAX:
+                visual_context_log.pop(0)
         
     weapon_score = 100.0 if weapon_detected else 0.0
     posture_score = current_danger_score
     
     global_threat_score = (0.65 * weapon_score) + (0.35 * posture_score)
-    current_time = time.time()
     
     # Event Triggers
     if posture_score > 70 and (current_time - last_posture_time) > COOLDOWN_SEC:
@@ -352,11 +363,18 @@ def process_single_frame(frame, yolo_model, predict_kw):
     if len(global_event_log) > 100:
         global_event_log.pop(0)
 
-    # Emergency Call Trigger (Score > 75)
-    if global_threat_score > 75.0 and (current_time - last_emergency_call_time > EMERGENCY_CALL_COOLDOWN):
-        print(f"[ALERT] Global threat score {global_threat_score:.1f} exceeded threshold! Triggering emergency call.")
+    # Emergency Call Triggers (respect cooldown)
+    if current_time - last_emergency_call_time <= EMERGENCY_CALL_COOLDOWN:
+        pass  # still in cooldown
+    elif posture_score >= 100:
+        # Body threat score 100: generate call content from events + transcript via Gemini, then call
+        print(f"[ALERT] Body threat score 100. Generating call content and triggering emergency call.")
         last_emergency_call_time = current_time
-        threading.Thread(target=trigger_emergency_call, kwargs={"threat_overview": f"Automated Video Alert: Threat score {global_threat_score:.1f}/100. Weapon detected: {weapon_detected}."}, daemon=True).start()
+        threading.Thread(
+            target=do_emergency_call_with_gemini_content,
+            kwargs={"reason": "Body threat score reached 100; posture suggests imminent threat (e.g. suspect reached for weapon)."},
+            daemon=True,
+        ).start()
 
     # --- DRAW OVERLAYS ---
     draw_connections(annotated, keypoints, EDGES, confidence_threshold)
@@ -415,14 +433,71 @@ def open_capture(source: str):
         pass
     return cap
 
+EMERGENCY_CALL_PROMPT = """You are generating the script for an automated emergency call to police dispatch. This will be read aloud by text-to-speech. Use ONLY the context below. Output 2-4 short sentences—the exact script to be read, no labels or bullet points.
+
+If the reason is body threat 100 (posture), use natural language like "Officer in potential danger. Suspect reached for a gun." or "Immediate threat: suspect made a move for a weapon. Request backup." Be concise and actionable."""
+
+def generate_emergency_call_content(reason: str, assessment_text: str = None):
+    """Use Gemini to generate phone call script from events + transcript. Returns fallback string on failure."""
+    global global_event_log, global_transcript_history, global_latest_transcript
+    events_str = "None"
+    if global_event_log:
+        parts = []
+        for e in global_event_log[-15:]:
+            msg = e.get("message", "")
+            score = e.get("score", "")
+            t = e.get("timestamp")
+            ts = time.strftime("%H:%M:%S", time.localtime(t)) if t else ""
+            parts.append(f"  - {msg}" + (f" (score {score})" if score else "") + (f" at {ts}" if ts else ""))
+        events_str = "\n".join(parts) if parts else "None"
+    transcript_str = " ".join(global_transcript_history[-10:]) if global_transcript_history else (global_latest_transcript or "None")
+    if not transcript_str or transcript_str.strip() == "":
+        transcript_str = "None"
+    user_content = (
+        f"REASON FOR CALL: {reason}\n\n"
+        f"RECENT EVENTS (from system):\n{events_str}\n\n"
+        f"RECENT TRANSCRIPT (audio):\n{transcript_str}\n\n"
+    )
+    if assessment_text:
+        user_content += f"THREAT ASSESSMENT (from prior analysis):\n{assessment_text}\n\n"
+    user_content += "Generate ONLY the script to be read aloud to dispatch (2-4 short sentences):"
+    try:
+        client = genai.Client()
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=user_content,
+            config=types.GenerateContentConfig(
+                system_instruction=EMERGENCY_CALL_PROMPT,
+                temperature=0.3,
+                max_output_tokens=256,
+            ),
+        )
+        if hasattr(response, "text") and response.text and response.text.strip():
+            return response.text.strip()
+    except Exception as e:
+        print(f"[LOG] Gemini call-content generation failed: {e}", flush=True)
+    if "body threat" in reason.lower() or "100" in reason:
+        return "Officer in potential danger. Suspect reached for a gun. Request immediate backup."
+    return "Automated emergency alert. Request backup. Check officer status."
+
+def do_emergency_call_with_gemini_content(reason: str, assessment_text: str = None):
+    """Generate call content from events + transcript via Gemini, then place the Twilio call."""
+    content = generate_emergency_call_content(reason, assessment_text)
+    trigger_emergency_call(threat_overview=content)
+
 def assess_threat(gemini_client, transcription):
-    global last_emergency_call_time
+    """Run Gemini threat assessment on transcript + visual context log (e.g. potential knife); if ELEVATED or HIGH, place emergency call with the assessment text (read aloud to dispatch)."""
+    global last_emergency_call_time, visual_context_log
     if not transcription or not transcription.strip():
         return
     print("\n[LOG] Trigger word detected! Calling Gemini API for threat assessment...", flush=True)
+    visual_section = ""
+    if visual_context_log:
+        visual_section = "\n\nVisual context from camera (recent detections; use for context only):\n" + "\n".join("- " + entry for entry in visual_context_log[-10:]) + "\n\n"
     user_message = (
         "Transcription from a police stop (e.g., traffic or pedestrian stop):\n\n"
-        f'"""\n{transcription}\n"""\n\n'
+        f'"""\n{transcription}\n"""\n'
+        f"{visual_section}"
         "Provide the threat assessment as specified in your instructions."
     )
     try:
@@ -439,10 +514,18 @@ def assess_threat(gemini_client, transcription):
             text = response.text.strip()
             print("\n================ THREAT ASSESSMENT ================\n" + text + "\n===================================================\n", flush=True)
             
-            if "THREAT LEVEL: HIGH" in text.upper() and (time.time() - last_emergency_call_time > EMERGENCY_CALL_COOLDOWN):
-                print("[ALERT] High threat detected in audio! Triggering emergency call.")
+            # Generate call content from events + transcript (and this assessment), then place call
+            upper = text.upper()
+            if (time.time() - last_emergency_call_time > EMERGENCY_CALL_COOLDOWN) and (
+                "THREAT LEVEL: HIGH" in upper or "THREAT LEVEL: ELEVATED" in upper
+            ):
+                print("[ALERT] Elevated or high threat in audio. Generating call content and triggering emergency call.")
                 last_emergency_call_time = time.time()
-                trigger_emergency_call(threat_overview=text)
+                threading.Thread(
+                    target=do_emergency_call_with_gemini_content,
+                    kwargs={"reason": "Elevated or high threat from audio assessment.", "assessment_text": text},
+                    daemon=True,
+                ).start()
     except Exception as e:
         print(f"[LOG] Gemini error: {e}", flush=True)
 
