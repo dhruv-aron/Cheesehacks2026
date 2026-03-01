@@ -9,3 +9,5 @@ python-dotenv
 ai-edge-litert
 kagglehub
 av
+fastapi
+uvicorn

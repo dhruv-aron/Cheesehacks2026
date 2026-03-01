@@ -21,6 +21,11 @@ from google import genai
 from google.genai import types
 import queue
 import time
+import asyncio
+from fastapi import FastAPI, BackgroundTasks
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
 # ==========================================
 # 1. Configuration & Constants
@@ -46,7 +51,28 @@ WHISPER_COMPUTE_TYPE = "int8"
 WHISPER_DEVICE = "cpu"
 GEMINI_MODEL = "gemini-2.5-flash"
 
-TRIGGER_WORDS = {}
+TRIGGER_WORDS = {"gun", "knife", "shoot", "kill", "weapon", "help", "threat"}
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Global queue for the latest processed video frame
+frame_queue = queue.Queue(maxsize=2)
+
+global_threat_score = 0.0
+global_event_log = []
+
+last_weapon_time = 0.0
+last_posture_time = 0.0
+COOLDOWN_SEC = 5.0
+ffmpeg_process_running = False
 
 THREAT_ASSESSMENT_SYSTEM_PROMPT = """You are a threat assessment assistant. You will receive a transcription of audio from a police stop (e.g., traffic stop, pedestrian stop). Your job is to assess the situation and provide a concise threat assessment.
 
@@ -284,6 +310,42 @@ def process_single_frame(frame, yolo_model, predict_kw):
     else:
         current_danger_score = current_danger_score * (1 - alpha) + raw_score * alpha 
         
+    # --- GLOBAL THREAT CALCULATION ---
+    global global_threat_score, global_event_log, last_weapon_time, last_posture_time
+    
+    weapon_detected = False
+    if results and len(results) > 0 and results[0].boxes and len(results[0].boxes) > 0:
+        weapon_detected = True
+        
+    weapon_score = 100.0 if weapon_detected else 0.0
+    posture_score = current_danger_score
+    
+    global_threat_score = (0.65 * weapon_score) + (0.35 * posture_score)
+    current_time = time.time()
+    
+    # Event Triggers
+    if posture_score > 70 and (current_time - last_posture_time) > COOLDOWN_SEC:
+        global_event_log.append({
+            "type": "posture",
+            "message": "Dangerous Posture Detected",
+            "score": round(posture_score),
+            "timestamp": current_time
+        })
+        last_posture_time = current_time
+        
+    if weapon_detected and (current_time - last_weapon_time) > COOLDOWN_SEC:
+        global_event_log.append({
+            "type": "weapon",
+            "message": "Weapon Detected on Screen",
+            "score": 100,
+            "timestamp": current_time
+        })
+        last_weapon_time = current_time
+        
+    # Keep event log reasonably sized
+    if len(global_event_log) > 100:
+        global_event_log.pop(0)
+
     # --- DRAW OVERLAYS ---
     draw_connections(annotated, keypoints, EDGES, confidence_threshold)
     draw_keypoints(annotated, keypoints, confidence_threshold)
@@ -463,9 +525,13 @@ def run_with_audio_av(source: str, yolo_model, args, filter_cls_ids, use_half: b
                         
                         annotated, results = process_single_frame(img, yolo_model, predict_kw)
 
-                        if not args.no_display:
-                            cv2.imshow("Combined Threat Detection", annotated)
-                            if cv2.waitKey(1) & 0xFF == ord("q"): raise StopIteration
+                        try:
+                            # Keep only the freshest frame
+                            if frame_queue.full():
+                                frame_queue.get_nowait()
+                            frame_queue.put(annotated, block=False)
+                        except queue.Full:
+                            pass
                     frame_index += 1
             
             elif packet.stream.type == "audio" and audio_stream and audio_queue:
@@ -499,7 +565,7 @@ def run_with_audio_av(source: str, yolo_model, args, filter_cls_ids, use_half: b
         container.close()
     return True
 
-def main():
+def video_processing_thread(args):
     parser = argparse.ArgumentParser(description="Live Web UI for YOLO Threat Detection & TFLite Posture Detection")
     parser.add_argument("--source", "-s", default=DEFAULT_VIDEO_SOURCE)
     parser.add_argument("--model", "-m", default=None)
@@ -547,7 +613,7 @@ def main():
         try:
             import av
             if run_with_audio_av(args.source, yolo_model, args, filter_cls_ids, use_half, device, is_general, class_names):
-                if not args.no_display: cv2.destroyAllWindows()
+
                 return
         except Exception as e:
             print("Audio path failed, falling back to video only:", e)
@@ -569,14 +635,66 @@ def main():
             if filter_cls_ids is not None: predict_kw["classes"] = filter_cls_ids
             annotated, results = process_single_frame(frame, yolo_model, predict_kw)
 
-            if not args.no_display:
-                cv2.imshow("Combined Threat Detection", annotated)
-                if cv2.waitKey(1) & 0xFF == ord("q"): break
+            try:
+                # Keep only the freshest frame
+                if frame_queue.full():
+                    frame_queue.get_nowait()
+                frame_queue.put(annotated, block=False)
+            except queue.Full:
+                pass
 
         frame_index += 1
 
     cap.release()
-    if not args.no_display: cv2.destroyAllWindows()
+
+def generate_mjpeg_frames():
+    while True:
+        try:
+            # Block until a new frame is processed
+            frame = frame_queue.get(timeout=1.0)
+            ret, buffer = cv2.imencode('.jpg', frame)
+            if not ret:
+                continue
+            frame_bytes = buffer.tobytes()
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+        except queue.Empty:
+            # Send a keep-alive comment if no frame arrived yet
+            pass
+
+@app.get("/stream")
+def video_stream():
+    return StreamingResponse(generate_mjpeg_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+@app.get("/score")
+def get_score():
+    return {"score": round(global_threat_score, 1)}
+
+@app.get("/events")
+def get_events():
+    return {"events": global_event_log}
+
+
+def start_server():
+    parser = argparse.ArgumentParser(description="Live Web UI for YOLO Threat Detection & TFLite Posture Detection")
+    parser.add_argument("--source", "-s", default=DEFAULT_VIDEO_SOURCE)
+    parser.add_argument("--model", "-m", default=None)
+    parser.add_argument("--general", "-g", action="store_true")
+    parser.add_argument("--all-threats", action="store_true")
+    parser.add_argument("--conf", type=float, default=None)
+    parser.add_argument("--no-display", action="store_true", help="Ignored, visualization hosted via FastAPI.")
+    parser.add_argument("--imgsz", type=int, default=None)
+    parser.add_argument("--stride", type=int, default=None)
+    parser.add_argument("--fast", "-f", action="store_true")
+    parser.add_argument("--no-audio", action="store_true")
+    parser.add_argument("--no-half", action="store_true")
+    args = parser.parse_args()
+
+    # Kick off processing in a background Daemon thread
+    threading.Thread(target=video_processing_thread, args=(args,), daemon=True).start()
+    
+    # Run Uvicorn directly
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 
 if __name__ == "__main__":
-    main()
+    start_server()
