@@ -266,12 +266,8 @@ def process_single_frame(frame, yolo_model, predict_kw):
     
     cv2.putText(annotated, f"Danger Score: {score_int}/100", 
                 (20, 50), 
-                cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3, cv2.LINE_AA)
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2, cv2.LINE_AA)
     
-    for i, reason in enumerate(reasons):
-        cv2.putText(annotated, f"- {reason}", 
-                    (20, 90 + (i * 30)), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA)
 
     return annotated, results
 
