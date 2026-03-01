@@ -1,8 +1,9 @@
 """
-Live video stream with YOLOv8 multi-threat detection (Gun, Knife, Explosive, Grenade).
-Uses Subh775/Threat-Detection-YOLOv8n; auto-downloads if missing. Runs on Mac M4 (MPS) or CPU.
+Live video stream with YOLO object detection.
+Default: best knife detection via Threat-Detection-YOLOv8n (filtered to knife only).
+Use --all-threats for Gun, Knife, Explosive, Grenade. Use --general for YOLO12n (80 COCO classes). Mac M4 (MPS) supported.
 Supports: UDP stream (e.g. from Arduino/FFmpeg), webcam (0), or video file.
-Use --fast for lower latency (imgsz=480, stride=2) with still-good accuracy.
+Use --fast for lower latency (imgsz=512, stride=2) with good detection quality.
 """
 import argparse
 import os
@@ -14,18 +15,22 @@ from ultralytics import YOLO
 
 # Default: UDP stream from Linux/Arduino. Use VIDEO_SOURCE=0 for local webcam.
 DEFAULT_VIDEO_SOURCE = os.environ.get("VIDEO_SOURCE", "udp://@:1234")
-# Multi-threat model (Gun, Knife, Explosive, Grenade). Auto-downloaded if missing.
+# Best knife detection: Threat-Detection-YOLOv8n (trained on Gun, Knife, Explosive, Grenade). Default: filter to knife only.
 THREAT_MODEL_URL = "https://huggingface.co/Subh775/Threat-Detection-YOLOv8n/resolve/main/weights/best.pt"
+KNIFE_CLASS_NAME = "knife"
 THREAT_MODEL_PATH = Path(__file__).resolve().parent / "threat_detection.pt"
 DEFAULT_MODEL = os.environ.get("YOLO_MODEL", str(THREAT_MODEL_PATH))
 # Quality-focused defaults: 640 matches training; 0.30 reduces false positives.
 CONF_THRESHOLD = float(os.environ.get("YOLO_CONF", "0.30"))
 DEFAULT_IMGSZ = int(os.environ.get("YOLO_IMGSZ", "640"))
 DEFAULT_STRIDE = int(os.environ.get("YOLO_STRIDE", "1"))
-# Low-latency mode: smaller input + run every 2nd frame (good accuracy, less delay).
-FAST_IMGSZ = 480
+# Low-latency mode: 512px + every 2nd frame (better detail than 480, conf 0.30 for reliable detections).
+FAST_IMGSZ = 512
 FAST_STRIDE = 2
-FAST_CONF = 0.28
+FAST_CONF = 0.30
+
+# YOLO12 nano for general object detection (COCO 80 classes); auto-downloaded by Ultralytics.
+YOLO12N_MODEL = "yolo12n.pt"
 
 THREAT_CLASSES = ("gun", "knife", "explosive", "grenade")
 
@@ -37,7 +42,7 @@ def ensure_threat_model() -> str:
         return str(path)
     if THREAT_MODEL_PATH.exists():
         return str(THREAT_MODEL_PATH)
-    print("Downloading multi-threat model (Gun, Knife, Explosive, Grenade)...")
+    print("Downloading threat model (knife detection; Gun, Knife, Explosive, Grenade)...")
     try:
         import urllib.request
         THREAT_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -82,7 +87,7 @@ def open_capture(source: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Live multi-threat detection (Gun, Knife, Explosive, Grenade). UDP stream default. Mac M4 (MPS) supported."
+        description="Live YOLO detection. Default: knife detection. Use --all-threats or --general. Mac M4 (MPS) supported."
     )
     parser.add_argument(
         "--source", "-s",
@@ -92,15 +97,28 @@ def main():
     parser.add_argument(
         "--model", "-m",
         default=None,
-        help="Path to .pt model (default: threat_detection.pt, auto-downloaded)",
+        help="Path to .pt model (default: threat_detection.pt). Use --general for yolo12n.pt",
     )
-    parser.add_argument("--conf", type=float, default=None, help="Confidence threshold 0-1 (default 0.30, 0.28 in --fast)")
+    parser.add_argument(
+        "--general", "-g",
+        action="store_true",
+        help="Use YOLO12n for general object detection (80 COCO classes); auto-downloaded",
+    )
+    parser.add_argument(
+        "--all-threats",
+        action="store_true",
+        help="Show all threat classes (Gun, Knife, Explosive, Grenade). Default: knife only.",
+    )
+    parser.add_argument("--conf", type=float, default=None, help="Confidence threshold 0-1 (default 0.30)")
     parser.add_argument("--no-display", action="store_true", help="Headless; no window")
-    parser.add_argument("--imgsz", type=int, default=None, help="Inference size (default 640, 480 in --fast)")
+    parser.add_argument("--imgsz", type=int, default=None, help="Inference size (default 640, 512 in --fast)")
     parser.add_argument("--stride", type=int, default=None, help="Run detection every N frames (default 1, 2 in --fast)")
-    parser.add_argument("--fast", "-f", action="store_true", help="Lower latency: imgsz=480, stride=2, conf=0.28 (still good accuracy)")
+    parser.add_argument("--fast", "-f", action="store_true", help="Lower latency: imgsz=512, stride=2 (good accuracy)")
     parser.add_argument("--no-half", action="store_true", help="Disable FP16 (use if errors on GPU/MPS)")
     args = parser.parse_args()
+
+    if args.general:
+        args.model = YOLO12N_MODEL
 
     if args.fast:
         if args.imgsz is None:
@@ -121,11 +139,24 @@ def main():
     else:
         model_path = args.model
 
+    is_general = model_path == YOLO12N_MODEL or "yolo12" in model_path.lower()
     device = get_device()
-    print("Loading multi-threat model:", model_path, "| device:", device)
+    print("Loading model:", model_path, "| device:", device)
     model = YOLO(model_path)
     class_names = model.names
-    print("Classes:", class_names)
+
+    # Threat model: default to knife only; use --all-threats for Gun, Knife, Explosive, Grenade.
+    filter_cls_ids = None
+    if not is_general and not args.all_threats:
+        filter_cls_ids = [i for i, name in class_names.items() if str(name).lower() == KNIFE_CLASS_NAME]
+        if filter_cls_ids:
+            print("Knife detection only (use --all-threats for Gun, Knife, Explosive, Grenade)")
+        else:
+            filter_cls_ids = None
+    if is_general:
+        print("Classes: COCO 80 (general)")
+    elif filter_cls_ids is None:
+        print("Classes:", class_names)
 
     use_half = False
     if device == "cuda" and not args.no_half:
@@ -141,7 +172,7 @@ def main():
         print("Error: Could not open video stream.")
         sys.exit(1)
 
-    print("Stream connected. Threat detection active. Press 'q' to quit. imgsz=%s conf=%.2f stride=%s%s" % (
+    print("Stream connected. Press 'q' to quit. imgsz=%s conf=%.2f stride=%s%s" % (
         args.imgsz, args.conf, args.stride, " [fast]" if args.fast else ""))
     last_results = None
     frame_index = 0
@@ -153,15 +184,18 @@ def main():
             break
 
         if frame_index % args.stride == 0:
-            results = model.predict(
-                frame,
+            predict_kw = dict(
                 conf=args.conf,
                 verbose=False,
                 imgsz=args.imgsz,
                 half=use_half,
                 device=device,
                 max_det=100,
+                iou=0.5,
             )
+            if filter_cls_ids is not None:
+                predict_kw["classes"] = filter_cls_ids
+            results = model.predict(frame, **predict_kw)
             last_results = results
 
         if last_results and len(last_results) > 0:
@@ -172,7 +206,13 @@ def main():
         frame_index += 1
 
         if not args.no_display:
-            cv2.imshow("Multi-threat detection (Gun, Knife, Explosive, Grenade)", annotated)
+            if is_general:
+                title = "YOLO12 general detection"
+            elif args.all_threats:
+                title = "Multi-threat detection (Gun, Knife, Explosive, Grenade)"
+            else:
+                title = "Knife detection"
+            cv2.imshow(title, annotated)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
         else:
