@@ -6,3 +6,6 @@ ultralytics
 ultralytics-thop
 twilio
 python-dotenv
+ai-edge-litert
+kagglehub
+av
