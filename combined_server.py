@@ -26,6 +26,7 @@ from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+from emergency_caller import trigger_emergency_call
 
 # ==========================================
 # 1. Configuration & Constants
@@ -72,6 +73,8 @@ global_event_log = []
 last_weapon_time = 0.0
 last_posture_time = 0.0
 COOLDOWN_SEC = 5.0
+last_emergency_call_time = 0.0
+EMERGENCY_CALL_COOLDOWN = 60.0
 ffmpeg_process_running = False
 
 THREAT_ASSESSMENT_SYSTEM_PROMPT = """You are a threat assessment assistant. You will receive a transcription of audio from a police stop (e.g., traffic stop, pedestrian stop). Your job is to assess the situation and provide a concise threat assessment.
@@ -311,7 +314,7 @@ def process_single_frame(frame, yolo_model, predict_kw):
         current_danger_score = current_danger_score * (1 - alpha) + raw_score * alpha 
         
     # --- GLOBAL THREAT CALCULATION ---
-    global global_threat_score, global_event_log, last_weapon_time, last_posture_time
+    global global_threat_score, global_event_log, last_weapon_time, last_posture_time, last_emergency_call_time
     
     weapon_detected = False
     if results and len(results) > 0 and results[0].boxes and len(results[0].boxes) > 0:
@@ -345,6 +348,12 @@ def process_single_frame(frame, yolo_model, predict_kw):
     # Keep event log reasonably sized
     if len(global_event_log) > 100:
         global_event_log.pop(0)
+
+    # Emergency Call Trigger (Score > 75)
+    if global_threat_score > 75.0 and (current_time - last_emergency_call_time > EMERGENCY_CALL_COOLDOWN):
+        print(f"[ALERT] Global threat score {global_threat_score:.1f} exceeded threshold! Triggering emergency call.")
+        last_emergency_call_time = current_time
+        threading.Thread(target=trigger_emergency_call, kwargs={"threat_overview": f"Automated Video Alert: Threat score {global_threat_score:.1f}/100. Weapon detected: {weapon_detected}."}, daemon=True).start()
 
     # --- DRAW OVERLAYS ---
     draw_connections(annotated, keypoints, EDGES, confidence_threshold)
@@ -404,6 +413,7 @@ def open_capture(source: str):
     return cap
 
 def assess_threat(gemini_client, transcription):
+    global last_emergency_call_time
     if not transcription or not transcription.strip():
         return
     print("\n[LOG] Trigger word detected! Calling Gemini API for threat assessment...", flush=True)
@@ -423,7 +433,13 @@ def assess_threat(gemini_client, transcription):
             ),
         )
         if hasattr(response, "text") and response.text:
-            print("\n================ THREAT ASSESSMENT ================\n" + response.text.strip() + "\n===================================================\n", flush=True)
+            text = response.text.strip()
+            print("\n================ THREAT ASSESSMENT ================\n" + text + "\n===================================================\n", flush=True)
+            
+            if "THREAT LEVEL: HIGH" in text.upper() and (time.time() - last_emergency_call_time > EMERGENCY_CALL_COOLDOWN):
+                print("[ALERT] High threat detected in audio! Triggering emergency call.")
+                last_emergency_call_time = time.time()
+                trigger_emergency_call(threat_overview=text)
     except Exception as e:
         print(f"[LOG] Gemini error: {e}", flush=True)
 
