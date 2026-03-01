@@ -26,6 +26,7 @@ Stream from a Linux board (Arduino) to your Mac; run YOLOv8 object detection on 
    ```
    Detects **Gun, Knife, Explosive, Grenade**. Default source: `udp://@:1234`. Press `q` to quit.
    - Inference size 640 and conf 0.30 by default for good detection quality.
+- **Lower latency:** `python3 server.py --fast` (imgsz=480, stride=2; still good accuracy).
 - Local webcam: `python3 server.py --source 0`
 - Custom model: `python3 server.py --model path/to/model.pt`
 

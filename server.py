@@ -2,6 +2,7 @@
 Live video stream with YOLOv8 multi-threat detection (Gun, Knife, Explosive, Grenade).
 Uses Subh775/Threat-Detection-YOLOv8n; auto-downloads if missing. Runs on Mac M4 (MPS) or CPU.
 Supports: UDP stream (e.g. from Arduino/FFmpeg), webcam (0), or video file.
+Use --fast for lower latency (imgsz=480, stride=2) with still-good accuracy.
 """
 import argparse
 import os
@@ -21,6 +22,10 @@ DEFAULT_MODEL = os.environ.get("YOLO_MODEL", str(THREAT_MODEL_PATH))
 CONF_THRESHOLD = float(os.environ.get("YOLO_CONF", "0.30"))
 DEFAULT_IMGSZ = int(os.environ.get("YOLO_IMGSZ", "640"))
 DEFAULT_STRIDE = int(os.environ.get("YOLO_STRIDE", "1"))
+# Low-latency mode: smaller input + run every 2nd frame (good accuracy, less delay).
+FAST_IMGSZ = 480
+FAST_STRIDE = 2
+FAST_CONF = 0.28
 
 THREAT_CLASSES = ("gun", "knife", "explosive", "grenade")
 
@@ -89,12 +94,27 @@ def main():
         default=None,
         help="Path to .pt model (default: threat_detection.pt, auto-downloaded)",
     )
-    parser.add_argument("--conf", type=float, default=CONF_THRESHOLD, help="Confidence threshold 0-1 (default 0.30)")
+    parser.add_argument("--conf", type=float, default=None, help="Confidence threshold 0-1 (default 0.30, 0.28 in --fast)")
     parser.add_argument("--no-display", action="store_true", help="Headless; no window")
-    parser.add_argument("--imgsz", type=int, default=DEFAULT_IMGSZ, help="Inference size (default 640 for quality)")
-    parser.add_argument("--stride", type=int, default=DEFAULT_STRIDE, help="Run detection every N frames")
+    parser.add_argument("--imgsz", type=int, default=None, help="Inference size (default 640, 480 in --fast)")
+    parser.add_argument("--stride", type=int, default=None, help="Run detection every N frames (default 1, 2 in --fast)")
+    parser.add_argument("--fast", "-f", action="store_true", help="Lower latency: imgsz=480, stride=2, conf=0.28 (still good accuracy)")
     parser.add_argument("--no-half", action="store_true", help="Disable FP16 (use if errors on GPU/MPS)")
     args = parser.parse_args()
+
+    if args.fast:
+        if args.imgsz is None:
+            args.imgsz = FAST_IMGSZ
+        if args.stride is None:
+            args.stride = FAST_STRIDE
+        if args.conf is None:
+            args.conf = FAST_CONF
+    if args.imgsz is None:
+        args.imgsz = DEFAULT_IMGSZ
+    if args.stride is None:
+        args.stride = DEFAULT_STRIDE
+    if args.conf is None:
+        args.conf = CONF_THRESHOLD
 
     if args.model is None:
         model_path = ensure_threat_model()
@@ -121,8 +141,8 @@ def main():
         print("Error: Could not open video stream.")
         sys.exit(1)
 
-    print("Stream connected. Threat detection active. Press 'q' to quit. imgsz=%s conf=%.2f stride=%s" % (
-        args.imgsz, args.conf, args.stride))
+    print("Stream connected. Threat detection active. Press 'q' to quit. imgsz=%s conf=%.2f stride=%s%s" % (
+        args.imgsz, args.conf, args.stride, " [fast]" if args.fast else ""))
     last_results = None
     frame_index = 0
 
@@ -140,13 +160,14 @@ def main():
                 imgsz=args.imgsz,
                 half=use_half,
                 device=device,
+                max_det=100,
             )
             last_results = results
 
         if last_results and len(last_results) > 0:
             annotated = last_results[0].plot(img=frame.copy())
         else:
-            annotated = frame.copy()
+            annotated = frame
 
         frame_index += 1
 
