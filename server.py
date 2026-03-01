@@ -1,0 +1,171 @@
+"""
+Live video stream with YOLOv8 multi-threat detection (Gun, Knife, Explosive, Grenade).
+Uses Subh775/Threat-Detection-YOLOv8n; auto-downloads if missing. Runs on Mac M4 (MPS) or CPU.
+Supports: UDP stream (e.g. from Arduino/FFmpeg), webcam (0), or video file.
+"""
+import argparse
+import os
+import sys
+from pathlib import Path
+
+import cv2
+from ultralytics import YOLO
+
+# Default: UDP stream from Linux/Arduino. Use VIDEO_SOURCE=0 for local webcam.
+DEFAULT_VIDEO_SOURCE = os.environ.get("VIDEO_SOURCE", "udp://@:1234")
+# Multi-threat model (Gun, Knife, Explosive, Grenade). Auto-downloaded if missing.
+THREAT_MODEL_URL = "https://huggingface.co/Subh775/Threat-Detection-YOLOv8n/resolve/main/weights/best.pt"
+THREAT_MODEL_PATH = Path(__file__).resolve().parent / "threat_detection.pt"
+DEFAULT_MODEL = os.environ.get("YOLO_MODEL", str(THREAT_MODEL_PATH))
+# Quality-focused defaults: 640 matches training; 0.30 reduces false positives.
+CONF_THRESHOLD = float(os.environ.get("YOLO_CONF", "0.30"))
+DEFAULT_IMGSZ = int(os.environ.get("YOLO_IMGSZ", "640"))
+DEFAULT_STRIDE = int(os.environ.get("YOLO_STRIDE", "1"))
+
+THREAT_CLASSES = ("gun", "knife", "explosive", "grenade")
+
+
+def ensure_threat_model() -> str:
+    """Download Threat-Detection model if not present; return path to .pt file."""
+    path = Path(DEFAULT_MODEL)
+    if path.is_absolute() and path.exists():
+        return str(path)
+    if THREAT_MODEL_PATH.exists():
+        return str(THREAT_MODEL_PATH)
+    print("Downloading multi-threat model (Gun, Knife, Explosive, Grenade)...")
+    try:
+        import urllib.request
+        THREAT_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(THREAT_MODEL_URL, THREAT_MODEL_PATH)
+        if not THREAT_MODEL_PATH.exists() or THREAT_MODEL_PATH.stat().st_size < 1_000_000:
+            raise RuntimeError("Downloaded file too small or missing")
+        print("Saved:", THREAT_MODEL_PATH)
+        return str(THREAT_MODEL_PATH)
+    except Exception as e:
+        print("Error: Could not download threat model:", e, file=sys.stderr)
+        print("Download manually: curl -L -o threat_detection.pt", THREAT_MODEL_URL, file=sys.stderr)
+        sys.exit(1)
+
+
+def get_device():
+    """Use MPS on Mac M1/M2/M4 if available, else CPU."""
+    try:
+        import torch
+        if torch.backends.mps.is_available():
+            return "mps"
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
+def open_capture(source: str):
+    """Open video capture for UDP, webcam, or file. Minimal buffer for low latency."""
+    if source.isdigit():
+        cap = cv2.VideoCapture(int(source))
+    elif source.startswith(("udp://", "rtsp://", "http")):
+        cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+    else:
+        cap = cv2.VideoCapture(source)
+    try:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    except Exception:
+        pass
+    return cap
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Live multi-threat detection (Gun, Knife, Explosive, Grenade). UDP stream default. Mac M4 (MPS) supported."
+    )
+    parser.add_argument(
+        "--source", "-s",
+        default=DEFAULT_VIDEO_SOURCE,
+        help="Video source: udp://@:1234, 0 (webcam), or path to file",
+    )
+    parser.add_argument(
+        "--model", "-m",
+        default=None,
+        help="Path to .pt model (default: threat_detection.pt, auto-downloaded)",
+    )
+    parser.add_argument("--conf", type=float, default=CONF_THRESHOLD, help="Confidence threshold 0-1 (default 0.30)")
+    parser.add_argument("--no-display", action="store_true", help="Headless; no window")
+    parser.add_argument("--imgsz", type=int, default=DEFAULT_IMGSZ, help="Inference size (default 640 for quality)")
+    parser.add_argument("--stride", type=int, default=DEFAULT_STRIDE, help="Run detection every N frames")
+    parser.add_argument("--no-half", action="store_true", help="Disable FP16 (use if errors on GPU/MPS)")
+    args = parser.parse_args()
+
+    if args.model is None:
+        model_path = ensure_threat_model()
+    else:
+        model_path = args.model
+
+    device = get_device()
+    print("Loading multi-threat model:", model_path, "| device:", device)
+    model = YOLO(model_path)
+    class_names = model.names
+    print("Classes:", class_names)
+
+    use_half = False
+    if device == "cuda" and not args.no_half:
+        try:
+            import torch
+            use_half = torch.cuda.is_available()
+        except Exception:
+            pass
+
+    print("Opening source:", args.source)
+    cap = open_capture(args.source)
+    if not cap.isOpened():
+        print("Error: Could not open video stream.")
+        sys.exit(1)
+
+    print("Stream connected. Threat detection active. Press 'q' to quit. imgsz=%s conf=%.2f stride=%s" % (
+        args.imgsz, args.conf, args.stride))
+    last_results = None
+    frame_index = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Dropped frame or stream interrupted.")
+            break
+
+        if frame_index % args.stride == 0:
+            results = model.predict(
+                frame,
+                conf=args.conf,
+                verbose=False,
+                imgsz=args.imgsz,
+                half=use_half,
+                device=device,
+            )
+            last_results = results
+
+        if last_results and len(last_results) > 0:
+            annotated = last_results[0].plot(img=frame.copy())
+        else:
+            annotated = frame.copy()
+
+        frame_index += 1
+
+        if not args.no_display:
+            cv2.imshow("Multi-threat detection (Gun, Knife, Explosive, Grenade)", annotated)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+        else:
+            if last_results and len(last_results) > 0 and len(last_results[0].boxes) > 0:
+                for box in last_results[0].boxes:
+                    cls_id = int(box.cls[0])
+                    conf = float(box.conf[0])
+                    name = class_names.get(cls_id, str(cls_id))
+                    print("Detection: %s @ conf=%.2f" % (name, conf))
+
+    cap.release()
+    if not args.no_display:
+        cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
