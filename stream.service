@@ -1,0 +1,18 @@
+[Unit]
+Description=Headless USB Webcam UDP Stream
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace [YOUR_USERNAME] with your Linux username (e.g. pi, debian, root)
+User=[YOUR_USERNAME]
+Group=[YOUR_USERNAME]
+ExecStart=/usr/local/bin/start_stream.sh
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
