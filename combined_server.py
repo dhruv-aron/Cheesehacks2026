@@ -362,7 +362,8 @@ def process_single_frame(frame, yolo_model, predict_kw):
     weapon_score = (weapon_max_conf * 100.0) if weapon_detected else 0.0
     posture_score = current_danger_score
     
-    global_threat_score = (0.8 * weapon_score) + (0.2 * posture_score)
+    # Weapon 85%, posture 35% — both increased; cap at 100
+    global_threat_score = min(100.0, (0.85 * weapon_score) + (0.35 * posture_score))
     
     # Event Triggers
     if posture_score > 70 and (current_time - last_posture_time) > COOLDOWN_SEC:
@@ -390,13 +391,13 @@ def process_single_frame(frame, yolo_model, predict_kw):
     # Emergency Call Triggers (respect cooldown)
     if current_time - last_emergency_call_time <= EMERGENCY_CALL_COOLDOWN:
         pass  # still in cooldown
-    elif posture_score >= 100:
-        # Body threat score 100: generate call content from events + transcript via Gemini, then call
-        print(f"[ALERT] Body threat score 100. Generating call content and triggering emergency call.")
+    elif weapon_detected and weapon_max_conf >= 0.80:
+        # Weapon/knife seen at 80%+ confidence: trigger call
+        print(f"[ALERT] Weapon detected at {weapon_max_conf:.0%} (>= 80%). Triggering emergency call.")
         last_emergency_call_time = current_time
         threading.Thread(
             target=do_emergency_call_with_gemini_content,
-            kwargs={"reason": "Body threat score reached 100; posture suggests imminent threat (e.g. suspect reached for weapon)."},
+            kwargs={"reason": f"Weapon/knife detected on camera (confidence {weapon_max_conf:.0%})."},
             daemon=True,
         ).start()
 
