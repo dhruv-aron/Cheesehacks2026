@@ -68,6 +68,9 @@ frame_queue = queue.Queue(maxsize=2)
 
 global_threat_score = 0.0
 global_event_log = []
+# Whisper transcript: updated by transcription_worker; exposed at GET /transcript
+global_latest_transcript = ""
+global_transcript_history = []  # recent segments for API
 
 last_weapon_time = 0.0
 last_posture_time = 0.0
@@ -470,6 +473,10 @@ def transcription_worker(audio_queue: queue.Queue, stop_event: threading.Event):
                     segment_text = " ".join(new_text_parts)
                     print(f"\n[Transcript]: {segment_text}", flush=True)
                     full_transcript_history.append(segment_text)
+                    # Expose for API (GET /transcript)
+                    global global_latest_transcript, global_transcript_history
+                    global_latest_transcript = segment_text
+                    global_transcript_history = full_transcript_history[-20:]  # last 20 segments
                     
                     if gemini_client:
                         lower_text = segment_text.lower()
@@ -673,6 +680,15 @@ def get_score():
 @app.get("/events")
 def get_events():
     return {"events": global_event_log}
+
+
+@app.get("/transcript")
+def get_transcript():
+    """Latest Whisper transcription (when using UDP with audio). Empty if no audio path or nothing transcribed yet."""
+    return {
+        "latest": global_latest_transcript,
+        "history": global_transcript_history,
+    }
 
 
 def start_server():
