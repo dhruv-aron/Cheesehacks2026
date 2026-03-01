@@ -287,7 +287,25 @@ def process_single_frame(frame, yolo_model, predict_kw):
     # --- YOLO INFERENCE ---
     results = yolo_model.predict(frame, **predict_kw)
     if results and len(results) > 0:
-        annotated = results[0].plot(img=frame.copy())
+        res = results[0]
+        if res.boxes is not None and len(res.boxes) > 0:
+            knife_id = None
+            for k, v in res.names.items():
+                if str(v).lower() == "knife":
+                    knife_id = k
+                    break
+            
+            if knife_id is not None:
+                keep = []
+                for i in range(len(res.boxes)):
+                    cls = int(res.boxes.cls[i].item())
+                    conf = float(res.boxes.conf[i].item())
+                    if cls == knife_id and conf < 0.5:
+                        continue
+                    keep.append(i)
+                res = res[keep]
+                results[0] = res
+        annotated = res.plot(img=frame.copy())
     else:
         annotated = frame.copy()
 
@@ -327,18 +345,24 @@ def process_single_frame(frame, yolo_model, predict_kw):
     
     current_time = time.time()
     weapon_detected = False
+    weapon_max_conf = 0.0
     if results and len(results) > 0 and results[0].boxes and len(results[0].boxes) > 0:
         weapon_detected = True
+        for i in range(len(results[0].boxes)):
+            conf = float(results[0].boxes.conf[i].item())
+            if conf > weapon_max_conf:
+                weapon_max_conf = conf
+                
         # Log for Gemini context only (knife never triggers a call on its own)
         if (current_time - last_weapon_time) > COOLDOWN_SEC:
             visual_context_log.append(f"Potential knife/weapon detected on camera (at {time.strftime('%H:%M:%S', time.localtime(current_time))})")
             if len(visual_context_log) > VISUAL_CONTEXT_LOG_MAX:
                 visual_context_log.pop(0)
         
-    weapon_score = 100.0 if weapon_detected else 0.0
+    weapon_score = (weapon_max_conf * 100.0) if weapon_detected else 0.0
     posture_score = current_danger_score
     
-    global_threat_score = (0.65 * weapon_score) + (0.35 * posture_score)
+    global_threat_score = (0.8 * weapon_score) + (0.2 * posture_score)
     
     # Event Triggers
     if posture_score > 70 and (current_time - last_posture_time) > COOLDOWN_SEC:
@@ -350,11 +374,11 @@ def process_single_frame(frame, yolo_model, predict_kw):
         })
         last_posture_time = current_time
         
-    if weapon_detected and (current_time - last_weapon_time) > COOLDOWN_SEC:
+    if weapon_detected and weapon_max_conf >= 0.60 and (current_time - last_weapon_time) > COOLDOWN_SEC:
         global_event_log.append({
             "type": "weapon",
             "message": "Weapon Detected on Screen",
-            "score": 100,
+            "score": int(weapon_max_conf * 100),
             "timestamp": current_time
         })
         last_weapon_time = current_time
