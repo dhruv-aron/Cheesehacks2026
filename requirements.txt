@@ -5,4 +5,13 @@ sounddevice
 ultralytics
 ultralytics-thop
 twilio
+<<<<<<< Updated upstream
 python-dotenv
+=======
+python-dotenv
+ai-edge-litert
+kagglehub
+av
+faster-whisper>=1.0.0
+google-genai>=1.0.0
+>>>>>>> Stashed changes
