@@ -1,0 +1,1 @@
+discipline courage kindness
