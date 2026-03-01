@@ -20,6 +20,11 @@ Stream from a Linux board (Arduino) to your Mac; run YOLOv8 object detection on 
    ```bash
    pip install opencv-python ultralytics
    ```
+   For **audio** from the UDP stream (play webcam mic to your speakers while viewing):
+   ```bash
+   pip install av sounddevice
+   ```
+   Use `--no-audio` to disable if you don’t need it.
 2. Run (multi-threat model auto-downloads on first run; uses MPS on M4):
    ```bash
    python3 server.py
