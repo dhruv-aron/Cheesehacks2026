@@ -3,6 +3,8 @@ import tensorflow_hub as hub
 import cv2
 import numpy as np
 import time
+import argparse
+import os
 
 model = hub.load("https://tfhub.dev/google/movenet/singlepose/lightning/4")
 movenet = model.signatures['serving_default']
@@ -196,12 +198,25 @@ def calculate_danger_score(shaped_kpts, prev_kpts=None, confidence_threshold=0.3
     return score, reasons
 
 def main():
-    cap = cv2.VideoCapture(0)
+    parser = argparse.ArgumentParser(description="Police Officer Anomaly Detection with MoveNet")
+    DEFAULT_VIDEO_SOURCE = os.environ.get("VIDEO_SOURCE", "udp://@:1234")
+    parser.add_argument(
+        "--source", "-s",
+        default=DEFAULT_VIDEO_SOURCE,
+        help="Video source: udp://@:1234, 0 (webcam), or path to file",
+    )
+    args = parser.parse_args()
+
+    source = args.source
+    if source.isdigit():
+        source = int(source)
+
+    cap = cv2.VideoCapture(source)
     if not cap.isOpened():
-        print("Error: Could not open webcam.")
+        print(f"Error: Could not open video source: {source}")
         return
 
-    print("Starting video stream. Press 'q' to quit.")
+    print(f"Starting video stream from {source}. Press 'q' to quit.")
     
     current_danger_score = 0
     alpha = 0.2  
@@ -222,18 +237,23 @@ def main():
         
         confidence_threshold = 0.3
         
+        # Make Calculations Based on Points
         y, x, _ = frame.shape
         shaped_kpts = np.squeeze(np.multiply(keypoints, [y, x, 1]))
         
+        # Compute instantaneous score
         raw_score, reasons = calculate_danger_score(shaped_kpts, prev_kpts, confidence_threshold)
         
+        # Update prev_kpts for the next frame
         prev_kpts = shaped_kpts
         
+        # Smooth the score over time
         if raw_score > current_danger_score:
-            current_danger_score = raw_score
+            current_danger_score = raw_score # Instantly spike up
         else:
-            current_danger_score = current_danger_score * (1 - alpha) + raw_score * alpha
+            current_danger_score = current_danger_score * (1 - alpha) + raw_score * alpha # Slowly decay down
             
+        # Draw skeleton and joints over the slightly darkened frame
         overlay = frame.copy()
         cv2.rectangle(overlay, (0, 0), (x, y), (0, 0, 0), -1)
         frame = cv2.addWeighted(overlay, 0.3, frame, 0.7, 0)
@@ -241,6 +261,8 @@ def main():
         draw_connections(frame, keypoints, EDGES, confidence_threshold)
         draw_keypoints(frame, keypoints, confidence_threshold)
             
+        # UI Overlay for Danger Score
+        # Color dynamically shifts from green (safe) to red (danger)
         score_int = int(current_danger_score)
         color = (0, int(255 - (score_int * 2.55)), int(score_int * 2.55)) 
         
@@ -248,6 +270,7 @@ def main():
                     (20, 50), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3, cv2.LINE_AA)
         
+        # Print the reasons on screen
         for i, reason in enumerate(reasons):
             cv2.putText(frame, f"- {reason}", 
                         (20, 90 + (i * 30)), 
