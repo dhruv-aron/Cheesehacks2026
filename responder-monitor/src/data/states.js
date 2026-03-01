@@ -1,0 +1,155 @@
+export const STATES = {
+  normal: {
+    score: 18,
+    level: 'Low',
+    levelCls: 'low',
+    sub: 'All clear',
+    chips: [
+      { label: 'Background Noise', score: '0.21', cls: 'lo' },
+      { label: 'Movement',         score: '0.18', cls: 'lo' },
+    ],
+    sceneHtml: '<span class="hl">Scene quiet.</span> 2 people in view. Normal activity.',
+    audioLevel: 22,
+    audioStatus: 'Normal',
+    audioStatusColor: 'var(--live)',
+    audioFillCls: '',
+    cues: [
+      { name: 'Speech',    score: '0.32', cls: 'lo' },
+      { name: 'Footsteps', score: '0.22', cls: 'lo' },
+      { name: 'Door',      score: '0.08', cls: 'lo' },
+    ],
+    caption: '"…alright, just over here…"',
+    showBanner: false,
+    escPulse: false,
+    offline: false,
+    sparkColor: 'var(--live)',
+    sparkBase: 20,
+    whyText: [
+      { title: 'Background Noise (0.21)', body: 'Low-level ambient sound within normal range. No vocal distress detected.' },
+      { title: 'Movement (0.18)', body: 'Object motion present but within expected pedestrian range. No elevated velocity.' },
+    ],
+  },
+
+  elevated: {
+    score: 62,
+    level: 'Elevated',
+    levelCls: 'elevated',
+    sub: 'Monitoring closely',
+    chips: [
+      { label: 'Screaming',   score: '0.81', cls: 'hi' },
+      { label: 'Fast Motion', score: '0.74', cls: 'hi' },
+      { label: 'Glass Break', score: '0.64', cls: 'med' },
+      { label: 'Siren',       score: '0.12', cls: 'lo' },
+    ],
+    sceneHtml: '<span class="hl">Raised voices detected.</span> 3 people in view. Motion elevated.',
+    audioLevel: 72,
+    audioStatus: 'Hot',
+    audioStatusColor: 'var(--elevated)',
+    audioFillCls: 'hot',
+    cues: [
+      { name: 'Screaming', score: '0.81', cls: 'hi' },
+      { name: 'Shouting',  score: '0.62', cls: 'med' },
+      { name: 'Siren',     score: '0.12', cls: 'lo' },
+    ],
+    caption: '"…get away from me, stop—"',
+    showBanner: false,
+    escPulse: false,
+    offline: false,
+    sparkColor: 'var(--elevated)',
+    sparkBase: 55,
+    whyText: [
+      { title: 'Screaming (0.81)', body: 'Sustained high-frequency vocal distress above 85 dB for 4+ seconds.' },
+      { title: 'Fast Motion (0.74)', body: 'Object velocity exceeds 2 m/s across 3 detected persons.' },
+      { title: 'Glass Break (0.64)', body: 'Transient broadband noise at ~5 kHz consistent with glass fracture. Below standalone escalation threshold.' },
+    ],
+  },
+
+  high: {
+    score: 89,
+    level: 'High',
+    levelCls: 'high',
+    sub: 'Immediate review required',
+    chips: [
+      { label: 'Screaming',        score: '0.94', cls: 'hi' },
+      { label: 'Physical Contact', score: '0.88', cls: 'hi' },
+      { label: 'Glass Break',      score: '0.79', cls: 'hi' },
+      { label: 'Fast Motion',      score: '0.91', cls: 'hi' },
+    ],
+    sceneHtml: '<span class="hl" style="color:var(--high)">Physical altercation likely.</span> 3 people, contact detected. Screaming sustained.',
+    audioLevel: 95,
+    audioStatus: 'Peak',
+    audioStatusColor: 'var(--high)',
+    audioFillCls: 'peak',
+    cues: [
+      { name: 'Screaming',   score: '0.94', cls: 'hi' },
+      { name: 'Impact',      score: '0.88', cls: 'hi' },
+      { name: 'Glass Break', score: '0.79', cls: 'hi' },
+    ],
+    caption: '"—no! Help! Someone—"',
+    showBanner: true,
+    escPulse: true,
+    offline: false,
+    sparkColor: 'var(--high)',
+    sparkBase: 82,
+    whyText: [
+      { title: 'Screaming (0.94)', body: 'Continuous high-amplitude vocal distress. Classifier confidence exceeds critical threshold.' },
+      { title: 'Physical Contact (0.88)', body: 'Proximity and velocity vectors between persons indicate physical contact.' },
+      { title: 'Glass Break (0.79)', body: 'High-confidence fracture transient corroborated by motion spike at same timestamp.' },
+    ],
+  },
+
+  reconnecting: {
+    score: 62,
+    level: 'Elevated',
+    levelCls: 'elevated',
+    sub: 'Last known — stream offline',
+    chips: [
+      { label: 'Screaming',   score: '0.81', cls: 'hi' },
+      { label: 'Fast Motion', score: '0.74', cls: 'hi' },
+    ],
+    sceneHtml: '<span class="hl" style="color:var(--text-muted)">Stream disconnected.</span> Last known: raised voices, 3 persons.',
+    audioLevel: 0,
+    audioStatus: 'Offline',
+    audioStatusColor: 'var(--text-muted)',
+    audioFillCls: '',
+    cues: [
+      { name: 'Screaming', score: '—', cls: 'lo' },
+      { name: 'Shouting',  score: '—', cls: 'lo' },
+    ],
+    caption: '(Stream interrupted)',
+    showBanner: false,
+    escPulse: false,
+    offline: true,
+    sparkColor: 'var(--elevated)',
+    sparkBase: 55,
+    whyText: [
+      { title: 'Screaming (0.81)', body: 'Last confirmed reading before stream loss.' },
+      { title: 'Fast Motion (0.74)', body: 'Last confirmed reading before stream loss.' },
+    ],
+  },
+}
+
+export const LIVE_EVENT_TEMPLATES = {
+  normal: [
+    { type: 'audio', label: 'Audio:', makeText: () => `"Speech" `, score: () => rnd(0.30, 0.50) },
+    { type: 'video', label: 'Video:', makeText: () => `2 persons, normal activity` },
+    { type: 'system', label: 'System:', makeText: () => `Heartbeat OK` },
+  ],
+  elevated: [
+    { type: 'audio',  label: 'Audio:', makeText: () => `"Screaming"`, score: () => rnd(0.75, 0.88) },
+    { type: 'audio',  label: 'Audio:', makeText: () => `"Shouting"`,  score: () => rnd(0.55, 0.68) },
+    { type: 'video',  label: 'Video:', makeText: () => `3 persons, motion +${ri(28,45)}% vs baseline` },
+    { type: 'risk',   label: 'Risk:',  makeText: (s) => `${s.level} (${s.score + ri(-3,3)}) — sustained` },
+    { type: 'audio',  label: 'Audio:', makeText: () => `"Glass Break"`, score: () => rnd(0.55, 0.70) },
+  ],
+  high: [
+    { type: 'audio', label: 'Audio:', makeText: () => `"Screaming"`,        score: () => rnd(0.88, 0.97) },
+    { type: 'audio', label: 'Audio:', makeText: () => `"Impact"`,            score: () => rnd(0.80, 0.92) },
+    { type: 'video', label: 'Video:', makeText: () => `Physical contact — 2 persons` },
+    { type: 'risk',  label: 'Risk:',  makeText: (s) => `${s.level} (${s.score + ri(-2,4)}) — critical` },
+  ],
+  reconnecting: [],
+}
+
+function rnd(a, b) { return (Math.random() * (b - a) + a).toFixed(2) }
+function ri(a, b)  { return Math.floor(Math.random() * (b - a + 1)) + a }
