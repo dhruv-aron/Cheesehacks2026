@@ -116,6 +116,12 @@ function reducer(state, action) {
     case 'DISMISS_ALERT':
       return { ...state, alertDismissed: true }
 
+    case 'SET_EMERGENCY_CALL_ACTIVE':
+      return { ...state, emergencyCallAt: action.payload }
+
+    case 'DISMISS_EMERGENCY_CALL':
+      return { ...state, emergencyCallAt: null }
+
     default:
       return state
   }
@@ -137,6 +143,7 @@ function buildInitialState() {
     escLoading: false,
     modalOpen: false,
     alertDismissed: false,
+    emergencyCallAt: null,
     sparkData: buildSparkData(cfg.sparkBase),
     liveAudioLevel: cfg.audioLevel,
     timestamp: nowTs(),
@@ -247,13 +254,16 @@ export function MonitorProvider({ children }) {
           const key = `${ev.type}-${ev.timestamp}`
           if (seenEventTimestamps.current.has(key)) return
           seenEventTimestamps.current.add(key)
+          if (ev.type === 'emergency_call') {
+            dispatch({ type: 'SET_EMERGENCY_CALL_ACTIVE', payload: Date.now() })
+          }
           const feedEvent = makeEvent({
-            type: ev.type === 'weapon' ? 'risk' : 'video',
-            label: ev.type === 'weapon' ? 'Weapon:' : 'Posture:',
+            type: ev.type === 'weapon' ? 'risk' : ev.type === 'emergency_call' ? 'risk' : 'video',
+            label: ev.type === 'weapon' ? 'Weapon:' : ev.type === 'emergency_call' ? 'System:' : 'Posture:',
             text: ev.message ?? '',
             score: ev.score != null ? String(ev.score) : null,
+            variant: ev.type === 'emergency_call' ? 'escalated' : 'normal',
           })
-          // Override time with backend-formatted time if available
           if (ev.formatted_time) feedEvent.time = ev.formatted_time
           dispatch({ type: 'ADD_EVENT', payload: feedEvent })
         })
@@ -289,6 +299,7 @@ export function MonitorProvider({ children }) {
   const toggleMute = useCallback(() => dispatch({ type: 'TOGGLE_MUTE' }), [])
   const toggleWhy = useCallback(() => dispatch({ type: 'TOGGLE_WHY' }), [])
   const dismissAlert = useCallback(() => dispatch({ type: 'DISMISS_ALERT' }), [])
+  const dismissEmergencyCall = useCallback(() => dispatch({ type: 'DISMISS_EMERGENCY_CALL' }), [])
   const setFilter = useCallback((f) => dispatch({ type: 'SET_FILTER', payload: f }), [])
   const setSearch = useCallback((q) => dispatch({ type: 'SET_SEARCH', payload: q }), [])
   const togglePlayer = useCallback((k) => dispatch({ type: 'TOGGLE_PLAYER', payload: k }), [])
@@ -321,6 +332,7 @@ export function MonitorProvider({ children }) {
     toggleMute,
     toggleWhy,
     dismissAlert,
+    dismissEmergencyCall,
     setFilter,
     setSearch,
     togglePlayer,
@@ -331,7 +343,7 @@ export function MonitorProvider({ children }) {
     backendConnected,
     liveScore,
     applyState, markSafe, openModal, closeModal,
-    toggleMute, toggleWhy, dismissAlert, setFilter,
+    toggleMute, toggleWhy, dismissAlert, dismissEmergencyCall, setFilter,
     setSearch, togglePlayer, confirmEscalate, recordClip,
   ])
 

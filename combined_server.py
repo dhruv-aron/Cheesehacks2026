@@ -469,7 +469,7 @@ def generate_emergency_call_content(reason: str, assessment_text: str = None):
             config=types.GenerateContentConfig(
                 system_instruction=EMERGENCY_CALL_PROMPT,
                 temperature=0.3,
-                max_output_tokens=256,
+                max_output_tokens=1024,
             ),
         )
         if hasattr(response, "text") and response.text and response.text.strip():
@@ -482,8 +482,17 @@ def generate_emergency_call_content(reason: str, assessment_text: str = None):
 
 def do_emergency_call_with_gemini_content(reason: str, assessment_text: str = None):
     """Generate call content from events + transcript via Gemini, then place the Twilio call."""
+    global global_event_log
     content = generate_emergency_call_content(reason, assessment_text)
     trigger_emergency_call(threat_overview=content)
+    # Notify frontend so it can show a flashing alert
+    global_event_log.append({
+        "type": "emergency_call",
+        "message": "Emergency call to dispatch initiated",
+        "timestamp": time.time(),
+    })
+    if len(global_event_log) > 100:
+        global_event_log.pop(0)
 
 def assess_threat(gemini_client, transcription):
     """Run Gemini threat assessment on transcript + visual context log (e.g. potential knife); if ELEVATED or HIGH, place emergency call with the assessment text (read aloud to dispatch)."""

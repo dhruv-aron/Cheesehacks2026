@@ -1,11 +1,12 @@
 import { useEffect } from 'react'
 import { MonitorProvider, useMonitor } from './context/MonitorContext.jsx'
-import TopBar       from './components/TopBar.jsx'
-import AlertBanner  from './components/AlertBanner.jsx'
-import PlayerColumn from './components/PlayerColumn.jsx'
-import Sidebar      from './components/Sidebar.jsx'
-import EscalateModal from './components/EscalateModal.jsx'
-import DemoSwitcher from './components/DemoSwitcher.jsx'
+import TopBar             from './components/TopBar.jsx'
+import AlertBanner        from './components/AlertBanner.jsx'
+import PlayerColumn       from './components/PlayerColumn.jsx'
+import Sidebar            from './components/Sidebar.jsx'
+import EscalateModal      from './components/EscalateModal.jsx'
+import EmergencyCallModal from './components/EmergencyCallModal.jsx'
+import DemoSwitcher       from './components/DemoSwitcher.jsx'
 
 function MonitorApp() {
   const { openModal, markSafe, closeModal, modalOpen } = useMonitor()
@@ -30,6 +31,7 @@ function MonitorApp() {
         <Sidebar />
       </main>
       <EscalateModal />
+      <EmergencyCallModal />
       <DemoSwitcher />
     </>
   )

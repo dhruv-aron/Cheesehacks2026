@@ -1,9 +1,16 @@
 import { useMonitor } from '../context/MonitorContext.jsx'
 
-export default function AlertBanner() {
-  const { stateConfig, alertDismissed, dismissAlert } = useMonitor()
+const EMERGENCY_CALL_ALERT_MS = 30_000
 
-  if (!stateConfig?.showBanner || alertDismissed) return null
+export default function AlertBanner() {
+  const { stateConfig, alertDismissed, dismissAlert, emergencyCallAt } = useMonitor()
+
+  const showEmergencyCall = emergencyCallAt != null && (Date.now() - emergencyCallAt) < EMERGENCY_CALL_ALERT_MS
+  const showHighThreat = stateConfig?.showBanner && !alertDismissed
+
+  if (showEmergencyCall) return null
+
+  if (!showHighThreat) return null
 
   return (
     <div className="alert-banner" role="alert" aria-live="assertive">
