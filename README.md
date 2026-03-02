@@ -1,11 +1,34 @@
-##Inspiration##
-First responders often get into unforeseen situations where they are in danger but are unable to call for backup or help. We wanted a system that would be able to detect danger from a variety of inputs to gain a full understanding of the threat level and context, then contact authorities if situation escalates. The application could also be used for assessing danger for anyone at the scene and acting quicker than human instinct.
 
-##What it does##
-Model uses 2 inputs, video and audio to assess risk by detecting weaponry, dangerous motions of individuals, and distinctive keywords that indicate a dangerous situation. Using all three of these inputs we are able to rate situations based on a "Aggregate Risk Score", a numerical reflection of how dangerous a situation is for an officer. If this situation is deemed dangerous, the software will contact authorities through the phone, providing key context behind situations threat and weaponry present, etc.
+## Demo Video
 
-##How we built it##
-We used the Arduino UNO Q connected to a webcam to capture audio and video for our on system Python-based classification/identification models. Leveraging the UNO Q, parallel processing for audio and video streams, we achieved a near real-time translation. The UNO Q enables the module to be portable, communicating over WiFi for models' inputs and results. On the processing end, we have three separate models running on 2 different threads in Python. One thread is running the video stream by taking in the webcam stream, performing calculations using pose-detection/stance-detection and object detection models, and outputting the altered video stream. Another thread is constantly transcribing the conversation, looking for distinctive keywords that would indicate a dangerous situation, using the power of semantics. We use these three models together to develop an aggregate score assessing danger in the current situation. If this aforementioned "danger" exceeds a threshold, an emergency dispatch call is made using Twilio. The phone call provides a summary of the situation using both the visual and acoustic cues of the scene. All these is is displayed in our frontend, where the live and altered video stream is displayed, alongside a live feed of current identifications in audio and video. The application also bodly shows danger at all times. The frontend was made using React.js and using REST architecture we were able to create seamless communication between the frontend and backend.
+[Watch the Demo Video on YouTube](https://www.youtube.com/watch?v=AkkOrvXaqBg&t=31s)
 
-##Challenges we ran into##
-The biggest challenge we ran into was the processing power of our mobile hardware, The Arduino. The Arduino only having 2 GB of RAM and limited CPU called innovation as engineers from our end. As most of the classification and identification models we made use of required computation, we off-sited the work onto a more powerful device. Through our innovation, we discovered a more realistic situation when expanding and extrapolating a project to the real-world. The relationship between on-field equipment and a more powerful server is something we were able to properly emulate. Another problem, our group ran into was the classification of weapons through our model. We saw that often most lightweight models would hallucinate weapons, and raise the risk level higher than warranted. To fix such an issue we fine-tuned the parameters of an open-source YOLOv8 Model.
+## Inspiration
+
+First responders often get into unforeseen situations where they are in danger but are unable to call for backup or help. We wanted a system that would be able to detect danger from a variety of inputs to gain a full understanding of the threat level and context, then contact authorities if the situation escalates. The application could also be used for assessing danger for anyone at the scene and acting quicker than human instinct.
+
+---
+
+## What It Does
+
+Our model uses two primary inputs: video and audio, to assess risk by detecting weaponry, dangerous motions of individuals, and distinctive keywords that indicate a dangerous situation. By combining these signals, we generate an **Aggregate Risk Score**, a numerical reflection of how dangerous a situation is for an officer. If the system determines the situation exceeds a defined danger threshold, the software automatically contacts authorities through a phone call, providing key contextual details such as identified threats, detected weaponry, and relevant audio cues.
+
+---
+
+## How We Built It
+
+We used the Arduino UNO Q connected to a webcam to capture audio and video for our on-system Python-based classification and identification models. Leveraging the UNO Q and parallel processing for audio and video streams, we achieved near real-time analysis. The UNO Q enables portability and communicates over WiFi for transmitting model inputs and results.
+
+On the processing end, we run three separate models across two Python threads. One thread processes the video stream, performing pose detection, stance analysis, and object detection before outputting the annotated video feed. The second thread continuously transcribes conversation audio, searching for semantically relevant keywords that may indicate danger. These three models work together to calculate the Aggregate Risk Score in real time.
+
+If the calculated danger level exceeds a preset threshold, an emergency dispatch call is made using Twilio. The call provides a summarized report of the situation based on both visual and audio cues. All of this information is displayed in our React.js frontend, which shows the live annotated video stream, real-time detection updates, and a prominently displayed danger level indicator. Using a REST-based architecture, we created seamless communication between the frontend and backend.
+
+---
+
+## Challenges We Ran Into
+
+One of the biggest challenges was the limited processing power of our mobile hardware, the Arduino. With only 2 GB of RAM and constrained CPU resources, running multiple machine learning models locally required careful optimization. Because many classification and detection models are computationally intensive, we offloaded heavy processing tasks to a more powerful external system. This architecture better reflects real-world deployments, where on-field equipment communicates with centralized servers.
+
+Another significant challenge involved weapon classification accuracy. Lightweight models frequently produced false positives, incorrectly identifying harmless objects as weapons and artificially inflating the risk score. To address this, we fine-tuned the parameters of an open-source YOLOv8 model to improve detection precision and reduce hallucinations.
+
+---
